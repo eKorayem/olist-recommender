@@ -8,3 +8,5 @@ __pycache__/
 .pytest_cache/
 
 project_code.md
+export_code_to_md.py
+project_code.md
