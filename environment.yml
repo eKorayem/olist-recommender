@@ -13,3 +13,4 @@ dependencies:
   - uvicorn=0.23.2
   - databricks-cli
   - setuptools
+  - pyarrow
