@@ -1,81 +1,130 @@
-import logging
+import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from typing import List, Optional
 
-# Import our custom modules
-from src.data.data_loader import OlistDataLoader
-from src.features.build_features import InteractionBuilder, SparseMatrixBuilder
-from src.models.train_model import RecommenderModel
-from src.models.inference import RecommenderInference
+# ---------------------------------------------------------
+# IMPORT YOUR ML INFERENCE FUNCTION HERE
+# Example: from src.models.predict import generate_lightfm_recommendations
+# ---------------------------------------------------------
 
-logger = logging.getLogger(__name__)
-
-# Initialize FastAPI
 app = FastAPI(
-    title="E-commerce Recommender API",
-    description="Scalable inference engine for the Olist dataset.",
+    title="Olist E-Commerce Recommender API",
+    description="API serving LightFM product recommendations.",
     version="1.0.0"
 )
 
-# Global variables to hold our model state in memory
-inference_engine = None
-popular_items = []
-
-# Define the expected JSON input schema
-class UserRequest(BaseModel):
+# --- Pydantic Schemas ---
+class RecommendationRequest(BaseModel):
     user_id: str
     num_recommendations: int = 5
 
-@app.on_event("startup")
-async def startup_event():
-    """
-    Runs automatically when the API starts. 
-    It trains the model once and loads it into memory so it can serve requests instantly.
-    """
-    global inference_engine, popular_items
-    logger.info("Starting up API and warming the model cache...")
-    
-    # 1. Load and process data
-    loader = OlistDataLoader(raw_data_path="data/raw/")
-    tables = loader.load_core_tables()
-    interactions_df = InteractionBuilder().build_implicit_interactions(tables)
-    
-    # 2. Compute popular items for Cold Start fallback
-    popular_items = interactions_df['product_id'].value_counts().head(5).index.tolist()
-    
-    # 3. Build Matrices and Train
-    matrix_builder = SparseMatrixBuilder()
-    interactions, weights, user_map, item_map = matrix_builder.build_sparse_matrices(interactions_df)
-    
-    recommender = RecommenderModel(no_components=30)
-    trained_model = recommender.train_and_evaluate(interactions)
-    
-    # 4. Initialize Inference Engine
-    inference_engine = RecommenderInference(trained_model, user_map, item_map)
-    logger.info("API is ready to serve predictions.")
+class ProductItem(BaseModel):
+    product_id: str
+    category_name: Optional[str] = "N/A"
+    product_name: Optional[str] = "N/A"
 
-@app.post("/recommend")
-async def get_recommendations(request: UserRequest):
+class RecommendationResponse(BaseModel):
+    user_id: str
+    status: str
+    recommendations: List[ProductItem]
+
+
+# --- Global Variables ---
+PRODUCTS_DF = None
+
+
+# --- Startup Event: Load Metadata ---
+@app.on_event("startup")
+def load_product_metadata():
     """
-    Endpoint that accepts a user ID and returns recommendations.
+    Loads product data into memory when the FastAPI server starts.
+    Ensure 'data/processed/products_metadata.csv' exists with columns:
+    'product_id', 'product_category_name_english', and 'product_name'.
     """
-    if inference_engine is None:
-        raise HTTPException(status_code=503, detail="Model is still initializing. Please wait.")
-        
-    # Generate recommendations
-    recs = inference_engine.recommend_for_user(request.user_id, request.num_recommendations)
+    global PRODUCTS_DF
+    try:
+        # Update this path if your CSV is located elsewhere or named differently
+        file_path = "data/processed/products_metadata.csv"
+        PRODUCTS_DF = pd.read_csv(file_path).set_index("product_id")
+        print("✅ Product metadata loaded successfully.")
+    except FileNotFoundError:
+        print("⚠️ Warning: products_metadata.csv not found. Reverting to UUIDs.")
+        PRODUCTS_DF = pd.DataFrame()
+    except Exception as e:
+        print(f"⚠️ Error loading product metadata: {e}")
+        PRODUCTS_DF = pd.DataFrame()
+
+
+# --- Helper Function: Enrich Product IDs ---
+def resolve_product_details(product_ids: List[str]) -> List[ProductItem]:
+    """
+    Takes a list of raw product UUIDs and maps them to actual category and names.
+    """
+    detailed_recs = []
     
-    # Cold Start Fallback
-    if not recs:
-        logger.info(f"Cold Start Fallback triggered for user {request.user_id}")
-        return {
-            "user_id": request.user_id,
-            "status": "cold_start_fallback",
-            "recommendations": popular_items[:request.num_recommendations]
-        }
+    for pid in product_ids:
+        if not PRODUCTS_DF.empty and pid in PRODUCTS_DF.index:
+            row = PRODUCTS_DF.loc[pid]
+            
+            # Handle duplicate index entries if any exist
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[0]
+            
+            category = row.get("product_category_name_english", "General")
+            
+            # Olist dataset usually doesn't have a strict "product_name", 
+            # so we fallback to a formatted ID or a specific column if you created one.
+            name = row.get("product_name", f"Product {pid[:8]}")
+        else:
+            category = "Unknown Category"
+            name = f"Product {pid[:8]}"
+            
+        detailed_recs.append(ProductItem(
+            product_id=pid,
+            category_name=str(category).title().replace("_", " "),
+            product_name=str(name)
+        ))
         
-    return {
-        "user_id": request.user_id,
-        "status": "personalized",
-        "recommendations": recs
-    }
+    return detailed_recs
+
+
+# --- Mock ML Function (Remove this if you import your real function at the top) ---
+def generate_lightfm_recommendations(user_id: str, num_recommendations: int):
+    """
+    Placeholder for your actual LightFM model inference.
+    Returns: (list_of_product_ids, status_string)
+    """
+    # Dummy Olist product IDs for testing
+    dummy_ids = [
+        "154e7e31ebfa092203795c972e5804a6",
+        "9dc1a7de274444849c219cff195d0b71",
+        "79ce45dbc2ea29b22b5a261bbb7b7ee7",
+        "27051f83715840aa06c4292128b97368",
+        "3e5201fe0d1ba474b9b90152c83c706c"
+    ]
+    status = "personalized" # or "cold_start_fallback"
+    return dummy_ids[:num_recommendations], status
+
+
+# --- Core API Endpoint ---
+@app.post("/recommend", response_model=RecommendationResponse)
+def get_recommendations(payload: RecommendationRequest):
+    try:
+        # 1. Fetch raw product IDs from the model
+        raw_product_ids, status = generate_lightfm_recommendations(
+            payload.user_id, 
+            payload.num_recommendations
+        )
+        
+        # 2. Enrich the raw IDs with actual category and names
+        detailed_recommendations = resolve_product_details(raw_product_ids)
+        
+        # 3. Return the structured response
+        return RecommendationResponse(
+            user_id=payload.user_id,
+            status=status,
+            recommendations=detailed_recommendations
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Recommendation Engine Error: {str(e)}")
