@@ -1,3 +1,10 @@
 mlruns/
 .vscode/
 __pycache__/
+
+data/
+*.pkl
+__pycache__/
+.pytest_cache/
+
+project_code.md
