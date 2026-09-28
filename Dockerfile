@@ -11,16 +11,17 @@ RUN apt-get update && apt-get install -y gcc g++ \
 # 4. Copy your requirements and environment files
 COPY requirements.txt .
 
-# 5. We will use pip inside Docker for simplicity, pointing to the exact versions we resolved
+# 5. Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir lightfm==1.17
 
-# 6. Copy the rest of your application code
+# 6. Copy application code and data
 COPY src/ /app/src/
 COPY data/ /app/data/
 
-# 7. Expose the port FastAPI runs on
+# 7. Expose ports for both FastAPI and Streamlit
 EXPOSE 8000
+EXPOSE 8501
 
-# 8. Command to run the application
+# 8. Default command (for backend)
 CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
